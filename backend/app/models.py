@@ -335,3 +335,232 @@ class AuditLog(Base):
     entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     detail: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ======================================================================
+# 检验排程子系统（周三检验班：P-8 / P-9 放行结果）
+#
+# 每条排程结果都绑定：包序列号、步骤、设备及校准区间、操作者资质、前置结果。
+# 失败只生成复测，不允许把失败结果手工改成合格；停机只重排未开始的步骤。
+# ======================================================================
+
+
+class InspectionStation(Base):
+    """检验设备/工位（绝缘仪、热像舱），带校准有效期。"""
+
+    __tablename__ = "inspection_stations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    station_no: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # insulation|thermal
+    calibrated_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class InspectorProfile(Base):
+    """检验员资质档案：与账号一对一，记录可操作的设备类型（资质）。"""
+
+    __tablename__ = "inspector_profiles"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), unique=True)
+    code: Mapped[str] = mapped_column(String(16), unique=True, index=True)  # T1 / T2
+    display_name: Mapped[str] = mapped_column(String(64))
+    qualified_kinds: Mapped[list] = mapped_column(JSON, default=list)  # ["insulation","thermal"]
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ShiftPlan(Base):
+    """检验班排程计划：一种排法（按包连续 / 按设备阶段交错）。"""
+
+    __tablename__ = "shift_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_no: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(128))
+    strategy: Mapped[str] = mapped_column(String(24))  # pack_continuous|equipment_stage
+    shift_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    shift_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(16), default="planned")  # planned|running|completed|cancelled
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PlanStationWindow(Base):
+    """本次排程内设备的可用窗口（校准有效期另行受 InspectionStation 约束）。"""
+
+    __tablename__ = "plan_station_windows"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("inspection_stations.id"))
+    available_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    available_to: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class PlanInspectorWindow(Base):
+    """本次排程内检验员的工作窗口与资质快照。"""
+
+    __tablename__ = "plan_inspector_windows"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    inspector_id: Mapped[int] = mapped_column(ForeignKey("inspector_profiles.id"))
+    available_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    available_to: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    qualified_kinds: Mapped[list] = mapped_column(JSON, default=list)
+
+
+class InspectionStep(Base):
+    """排程步骤：一个包的一道检验工序（绝缘/热像），带尝试次数用于复测。"""
+
+    __tablename__ = "inspection_steps"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    pack_serial: Mapped[str] = mapped_column(String(64), index=True)
+    pack_order: Mapped[int] = mapped_column(Integer, default=0)
+    sequence: Mapped[int] = mapped_column(Integer, default=0)  # 包内工序序号
+    attempt: Mapped[int] = mapped_column(Integer, default=1)   # 1 初检，>1 复测/复做
+    kind: Mapped[str] = mapped_column(String(16))              # insulation|thermal
+    duration_min: Mapped[int] = mapped_column(Integer)
+    station_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_stations.id"), nullable=True)
+    inspector_id: Mapped[int | None] = mapped_column(ForeignKey("inspector_profiles.id"), nullable=True)
+    planned_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    planned_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    actual_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    actual_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(24), default="planned")
+    # planned|scheduled|in_progress|done|failed|blocked|redo_required|cancelled
+    depends_on_step_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_steps.id"), nullable=True)
+    retest_of_step_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_steps.id"), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StepResult(Base):
+    """检验结果：绑定包序列号、步骤、设备校准区间、操作者资质与前置结果。"""
+
+    __tablename__ = "step_results"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    step_id: Mapped[int] = mapped_column(ForeignKey("inspection_steps.id"), index=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    pack_serial: Mapped[str] = mapped_column(String(64), index=True)
+    sequence: Mapped[int] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(16))
+    station_no: Mapped[str] = mapped_column(String(64))
+    station_kind: Mapped[str] = mapped_column(String(16))
+    station_calibrated_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    inspector_code: Mapped[str] = mapped_column(String(16))
+    inspector_qualified_kinds: Mapped[list] = mapped_column(JSON, default=list)
+    prerequisite_step_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_steps.id"), nullable=True)
+    prerequisite_result: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    result: Mapped[str] = mapped_column(String(16))  # pass|fail
+    readings: Mapped[dict] = mapped_column(JSON, default=dict)
+    source: Mapped[str] = mapped_column(String(16), default="field")  # field|retest|redo|late
+    valid: Mapped[bool] = mapped_column(Boolean, default=True)
+    invalid_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PackConclusion(Base):
+    """包放行结论：已签发（released）后，迟到结果不得覆盖，只能标记复核。"""
+
+    __tablename__ = "pack_conclusions"
+    __table_args__ = (UniqueConstraint("plan_id", "pack_serial", name="uq_plan_pack_conclusion"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    pack_serial: Mapped[str] = mapped_column(String(64), index=True)
+    conclusion_type: Mapped[str] = mapped_column(String(24), default="pending")
+    # pending|released|retest_required|held|cancelled
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    issued_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    review_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class HandoffRecord(Base):
+    """包内换人交接记录：某包的检验从一名检验员交给另一名。"""
+
+    __tablename__ = "handoff_records"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    pack_serial: Mapped[str] = mapped_column(String(64))
+    from_step_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_steps.id"), nullable=True)
+    to_step_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_steps.id"), nullable=True)
+    from_inspector_code: Mapped[str] = mapped_column(String(16))
+    to_inspector_code: Mapped[str] = mapped_column(String(16))
+    station_kind: Mapped[str] = mapped_column(String(16))
+    handoff_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class StationDowntime(Base):
+    """设备中途停机区间。停机时只重排尚未开始的步骤。"""
+
+    __tablename__ = "station_downtimes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("inspection_stations.id"), index=True)
+    start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CalibrationChange(Base):
+    """校准提前失效/变更记录。"""
+
+    __tablename__ = "calibration_changes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    station_id: Mapped[int] = mapped_column(ForeignKey("inspection_stations.id"), index=True)
+    previous_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    new_until: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    changed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PackCancellation(Base):
+    """包件取消：未开始步骤取消，历史结果保留；已签发结论不能直接取消。"""
+
+    __tablename__ = "pack_cancellations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    pack_serial: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str] = mapped_column(Text, default="")
+    cancelled_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class LateReceipt(Base):
+    """迟到回执：记录在案；已签发结论不被覆盖，只标记复核。"""
+
+    __tablename__ = "late_receipts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    plan_id: Mapped[int] = mapped_column(ForeignKey("shift_plans.id"), index=True)
+    pack_serial: Mapped[str] = mapped_column(String(64))
+    step_kind: Mapped[str] = mapped_column(String(16))
+    step_id: Mapped[int | None] = mapped_column(ForeignKey("inspection_steps.id"), nullable=True)
+    result: Mapped[str] = mapped_column(String(16))
+    readings: Mapped[dict] = mapped_column(JSON, default=dict)
+    source_doc: Mapped[str] = mapped_column(String(128), default="")
+    applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    note: Mapped[str] = mapped_column(Text, default="")
+    received_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

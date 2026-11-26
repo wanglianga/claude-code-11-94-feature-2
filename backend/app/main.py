@@ -4,7 +4,7 @@ from fastapi.responses import JSONResponse
 
 from .config import get_settings
 from .database import Base, engine
-from .routers import audit, auth, dismantling, receiving, safety, scenario, warehouse
+from .routers import audit, auth, dismantling, receiving, safety, scenario, scheduling, warehouse
 from .services.errors import AuthError, BusinessRuleError, NotFoundError
 
 settings = get_settings()
@@ -41,6 +41,7 @@ app.include_router(dismantling.router)
 app.include_router(safety.router)
 app.include_router(warehouse.router)
 app.include_router(scenario.router)
+app.include_router(scheduling.router)
 app.include_router(audit.router)
 
 

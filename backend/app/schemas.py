@@ -152,3 +152,51 @@ class WeighIn(BaseModel):
 class CloseBatchIn(BaseModel):
     batch_no: str
     explanation: str | None = None
+
+
+# ---------- inspection scheduling ----------
+class ScheduleBuildIn(BaseModel):
+    strategy: str = Field(description="pack_continuous|equipment_stage|both")
+
+
+class StepResultIn(BaseModel):
+    step_id: int
+    pack_serial: str
+    result: str = Field(description="pass|fail")
+    readings: dict = {}
+    note: str = ""
+
+
+class ExecutePlanIn(BaseModel):
+    fail: list[dict] = []  # [{"pack_serial": "P-9", "kind": "thermal"}]
+
+
+class DowntimeIn(BaseModel):
+    station_no: str
+    start_at: datetime
+    end_at: datetime
+    reason: str = ""
+
+
+class CalibrationChangeIn(BaseModel):
+    station_no: str
+    new_until: datetime
+    reason: str = ""
+
+
+class CancelPackIn(BaseModel):
+    pack_serial: str
+    reason: str = ""
+
+
+class LateReceiptIn(BaseModel):
+    pack_serial: str
+    kind: str = Field(description="insulation|thermal")
+    result: str = Field(description="pass|fail")
+    readings: dict = {}
+    source_doc: str = ""
+    note: str = ""
+
+
+class IssueConclusionsIn(BaseModel):
+    plan_id: int

@@ -7,6 +7,7 @@ const routes = [
   { path: '/receiving', component: () => import('./views/Receiving.vue'), title: '收货与隔离（模拟扫码器）' },
   { path: '/dismantling', component: () => import('./views/Dismantling.vue'), title: '拆解工单与换标' },
   { path: '/inspection', component: () => import('./views/Inspection.vue'), title: '检测台回执' },
+  { path: '/scheduling', component: () => import('./views/Scheduling.vue'), title: '周三检验班排程' },
   { path: '/safety', component: () => import('./views/Safety.vue'), title: '安全放行审批' },
   { path: '/warehouse', component: () => import('./views/Warehouse.vue'), title: '仓库拣货与核对' },
   { path: '/downstream', component: () => import('./views/Downstream.vue'), title: '下游签收端' },

@@ -19,6 +19,8 @@ SEED_USERS = [
     ("u_warehouse", "孙仓储", "warehouse", "仓储班"),
     ("u_downstream", "周买家", "downstream", "华东储能公司"),
     ("u_admin", "管理员", "admin", "中心管理组"),
+    ("u_t1", "T1 检验员", "inspector", "周三检验班"),
+    ("u_t2", "T2 检验员", "inspector", "周三检验班"),
 ]
 
 
@@ -50,6 +52,8 @@ def seed(db: Session) -> dict:
     db.flush()
 
     if db.scalar(select(models.Batch).where(models.Batch.batch_no == "L-7")):
+        db.commit()
+        seed_scheduling(db)
         db.commit()
         created["batch"] = "L-7 已存在，跳过场景播种"
         return created
@@ -87,4 +91,15 @@ def seed(db: Session) -> dict:
 
     created["batch"] = "L-7"
     created["packs"] = ["P-1", "P-2", "P-3", "P-4"]
+    db.commit()
+    seed_scheduling(db)
+    db.commit()
     return created
+
+
+def seed_scheduling(db: Session) -> dict:
+    """播种周三检验班资源：绝缘仪 / 热像舱、T1 / T2 资质档案（幂等）。"""
+    from .services import scheduling
+
+    setup = scheduling.ensure_shift_setup(db)
+    return {"stations": list(setup["stations"]), "inspectors": list(setup["inspectors"])}
